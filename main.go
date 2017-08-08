@@ -21,7 +21,7 @@ const (
 	region = "us-west-1"
 	queue_name = "benchmark-queue"
 	sns_topic_name = "benchmark-topic"
-	messageCount = 100
+	messageCount = 10000
 	enque_parallelism = 10
 	deque_parallelism = 10
 )
@@ -205,7 +205,7 @@ func dequeue(queue_url string) (uint64){
 	enqueue_time := *message.Attributes[sqs.MessageSystemAttributeNameSentTimestamp]+"000000"
 	enqueue_time_nanosec, _ := strconv.ParseUint(enqueue_time, 10, 0)
 	latency := uint64(time.Now().UnixNano()) - enqueue_time_nanosec
-	fmt.Println("Latency(ns): ", latency)
+	//fmt.Println("Latency(ns): ", latency)
 
 	// Delete the message after successful dequeue
 	_, err = sqs_client.DeleteMessage(&sqs.DeleteMessageInput{
