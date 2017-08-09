@@ -227,8 +227,8 @@ func dequeue(queue_url string) (uint64){
 	var body MessageBody
 	json.Unmarshal([]byte(*message.Body), &body)
 	enqueue_time := body.MessageAttributes.EnqueueTime.Value
-	enqueue_time_milisec, _ := strconv.ParseUint(enqueue_time, 10, 0)
-	latency := uint64(time.Now().UnixNano()) - enqueue_time_milisec
+	enqueue_time_nanosec, _ := strconv.ParseUint(enqueue_time, 10, 0)
+	latency := uint64(time.Now().UnixNano()) - enqueue_time_nanosec
 	//fmt.Println("Latency(ns): ", latency)
 
 	// Delete the message after successful dequeue
