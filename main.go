@@ -200,11 +200,35 @@ func dequeue(queue_url string) (uint64){
 		return 0
 	}
 
-	// Print latency in nanoseconds between enqueue and dequeue
+	// Get latency in nanoseconds between enqueue and dequeue. Since SNS sends the message attributes as part
+	// of body, we need to get it from there.
 	message := result.Messages[0]
-	enqueue_time := *message.Attributes[sqs.MessageSystemAttributeNameSentTimestamp]+"000000"
-	enqueue_time_nanosec, _ := strconv.ParseUint(enqueue_time, 10, 0)
-	latency := uint64(time.Now().UnixNano()) - enqueue_time_nanosec
+	type MessageBody struct {
+		Type              string    `json:"Type"`
+		MessageID         string    `json:"MessageId"`
+		TopicArn          string    `json:"TopicArn"`
+		Message           string    `json:"Message"`
+		Timestamp         time.Time `json:"Timestamp"`
+		SignatureVersion  string    `json:"SignatureVersion"`
+		Signature         string    `json:"Signature"`
+		SigningCertURL    string    `json:"SigningCertURL"`
+		UnsubscribeURL    string    `json:"UnsubscribeURL"`
+		MessageAttributes struct {
+			EnqueueTime struct {
+				Type  string `json:"Type"`
+				Value string `json:"Value"`
+			} `json:"EnqueueTime"`
+			Index struct {
+				Type  string `json:"Type"`
+				Value string `json:"Value"`
+			} `json:"Index"`
+		} `json:"MessageAttributes"`
+	}
+	var body MessageBody
+	json.Unmarshal([]byte(*message.Body), &body)
+	enqueue_time := body.MessageAttributes.EnqueueTime.Value
+	enqueue_time_milisec, _ := strconv.ParseUint(enqueue_time, 10, 0)
+	latency := uint64(time.Now().UnixNano()) - enqueue_time_milisec
 	//fmt.Println("Latency(ns): ", latency)
 
 	// Delete the message after successful dequeue
