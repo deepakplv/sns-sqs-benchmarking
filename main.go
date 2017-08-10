@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	region = "us-west-1"
+	region = "us-east-1"
 	queue_name = "benchmark-queue"
 	sns_topic_name = "benchmark-topic"
 	messageCount = 10000
