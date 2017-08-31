@@ -15,15 +15,20 @@ import (
 	"encoding/json"
 	"sync/atomic"
 	"sync"
+	"bufio"
 )
 
 const (
-	region = "us-west-1"
+	region = "eu-west-2"
 	queue_name = "benchmark-queue"
 	sns_topic_name = "benchmark-topic"
 	messageCount = 10000
 	enque_parallelism = 10
 	deque_parallelism = 10
+
+	// Time bound publish/deque
+	runtimeDuration = time.Second * 60
+	publishingWorkers = 300
 )
 var sqs_client *sqs.SQS
 var sns_client *sns.SNS
@@ -40,9 +45,15 @@ func main() {
 	if mode == "e" {
 		fmt.Println("Starting Publishing to SNS Topic")
 		BulkPublishToTopic(messageCount, topicARN, message)
+	} else if mode == "tbe" {
+		fmt.Println("Starting time bound Publishing for duration: ", runtimeDuration)
+		TimeBoundPublishToTopic(runtimeDuration, topicARN, message)
 	} else if mode == "d" {
 		fmt.Println("Starting dequeuer")
 		BulkDequeuer(messageCount, queue_url)
+	} else if mode == "tbd" {
+		fmt.Println("Starting time bound dequeuer")
+		TimeBoundDequeuer(runtimeDuration, queue_url)
 	} else {
 		fmt.Println("Invalid Flag, Exiting")
 		return
@@ -63,6 +74,24 @@ func BulkPublishToTopic(itemsCount uint64, topicARN string, message string) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TimeBoundPublishToTopic(totalDuration time.Duration, topicARN string, message string) {
+	var count uint64
+	for i:=0; i<publishingWorkers; i++ {
+		go func() {
+			for {
+				publishToTopic(topicARN, count, message)
+				atomic.AddUint64(&count, 1)
+				time.Sleep(time.Millisecond*975)
+			}
+		}()
+	}
+	select {
+	        case <- time.After(totalDuration):
+	                fmt.Println(count) // This may not be correct count as goroutines are still running
+	                os.Exit(1)
+        }
 }
 
 func BulkDequeuer(itemsCount uint64, queue_url string) {
@@ -87,6 +116,48 @@ func BulkDequeuer(itemsCount uint64, queue_url string) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TimeBoundDequeuer(totalDuration time.Duration, queue_url string) {
+	var totalLatency, count uint64
+	var latencyList []uint64
+
+	for i:=0; i<deque_parallelism; i++ {
+		go func() {
+			for {
+				latency := dequeue(queue_url)
+				if latency != 0 {
+					atomic.AddUint64(&count, 1)
+					atomic.AddUint64(&totalLatency, latency)
+					// Add latency to list after converting from nano to millisecond
+					latencyList = append(latencyList, latency/1000000)
+				}
+			}
+		}()
+	}
+	select {
+		// Duration(plus some buffer time) is over, so exit dequeuer
+	        case <- time.After(totalDuration+(time.Second*30)):
+	                // Create a file and write the latencies
+			file, err := os.Create("/tmp/sns_sqs_latencies.txt")
+			if err != nil {
+				panic(err)
+			}
+			defer file.Close()
+		        w := bufio.NewWriter(file)
+			for _, latency := range latencyList {
+		                fmt.Fprintln(w, latency)
+		        }
+			if err = w.Flush(); err != nil {
+		                panic(err)
+		        }
+	                if err = w.Flush(); err != nil {
+                                panic(err)
+                        }
+
+	                fmt.Println("Average Latency for ", count, "th item is ", totalLatency / count)
+	                os.Exit(1)
+        }
 }
 
 func getMessage() string{
@@ -173,7 +244,6 @@ func publishToTopic(topicARN string, index uint64, message string) {
 		// Print the error, cast err to awserr.Error to get the Code and
 		// Message from an error.
 		fmt.Println("SNS Publish Error:", err, result)
-		os.Exit(1)
 	}
 	//fmt.Println("Published SNS Message: ", result.MessageId)
 }
@@ -193,7 +263,6 @@ func dequeue(queue_url string) (uint64){
 	})
 	if err != nil {
 		fmt.Println("Dequeue Error: ", err)
-		os.Exit(1)
 	}
 	if len(result.Messages) == 0 {
 		//fmt.Println("Dequeue Received no messages")
@@ -238,10 +307,29 @@ func dequeue(queue_url string) (uint64){
 	})
 	if err != nil {
 		fmt.Println("Delete Error: ", err)
-		os.Exit(1)
 	}
 
 	return latency
+}
+
+// Returns max(=10) messages
+func batchDequeue(queue_url string) []*sqs.Message {
+	result, err := sqs_client.ReceiveMessage(&sqs.ReceiveMessageInput{
+		AttributeNames: []*string{
+		    aws.String(sqs.MessageSystemAttributeNameSentTimestamp),    // Get only sent timestamp
+		},
+		MessageAttributeNames: []*string{
+		    aws.String(sqs.QueueAttributeNameAll),      // Get all message attributes
+		},
+		QueueUrl:            &queue_url,
+		MaxNumberOfMessages: aws.Int64(10),     // Returns 10 message
+		VisibilityTimeout:   aws.Int64(1),      // Make message invisible for 1 second
+		WaitTimeSeconds:     aws.Int64(0),      // Short polling
+	})
+	if err != nil {
+		fmt.Println("Dequeue Error: ", err)
+	}
+	return result.Messages
 }
 
 func createSNSTopicAndSubscribeSQS(queueURL string, topicName string) string{
