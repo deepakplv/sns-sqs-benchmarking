@@ -51,9 +51,9 @@ func main() {
 	} else if mode == "d" {
 		fmt.Println("Starting dequeuer")
 		BulkDequeuer(messageCount, queue_url)
-	} else if mode == "tbd" {
-		fmt.Println("Starting time bound dequeuer")
-		TimeBoundDequeuer(runtimeDuration, queue_url)
+	} else if mode == "tbbd" {
+		fmt.Println("Starting time bound batch dequeuer")
+		TimeBoundBatchDequeuer(runtimeDuration, queue_url)
 	} else {
 		fmt.Println("Invalid Flag, Exiting")
 		return
@@ -118,19 +118,64 @@ func BulkDequeuer(itemsCount uint64, queue_url string) {
 	wg.Wait()
 }
 
-func TimeBoundDequeuer(totalDuration time.Duration, queue_url string) {
+func TimeBoundBatchDequeuer(totalDuration time.Duration, queue_url string) {
 	var totalLatency, count uint64
 	var latencyList []uint64
+	type MessageBody struct {
+		Type              string    `json:"Type"`
+		MessageID         string    `json:"MessageId"`
+		TopicArn          string    `json:"TopicArn"`
+		Message           string    `json:"Message"`
+		Timestamp         time.Time `json:"Timestamp"`
+		SignatureVersion  string    `json:"SignatureVersion"`
+		Signature         string    `json:"Signature"`
+		SigningCertURL    string    `json:"SigningCertURL"`
+		UnsubscribeURL    string    `json:"UnsubscribeURL"`
+		MessageAttributes struct {
+			                  EnqueueTime struct {
+				                              Type  string `json:"Type"`
+				                              Value string `json:"Value"`
+			                              } `json:"EnqueueTime"`
+			                  Index       struct {
+				                              Type  string `json:"Type"`
+				                              Value string `json:"Value"`
+			                              } `json:"Index"`
+		                  } `json:"MessageAttributes"`
+	}
+	var body MessageBody
 
 	for i:=0; i<deque_parallelism; i++ {
 		go func() {
 			for {
-				latency := dequeue(queue_url)
-				if latency != 0 {
+				messages := batchDequeue(queue_url)
+				var entries []*sqs.DeleteMessageBatchRequestEntry
+				for j:=0; j<len(messages); j++ {
+					message := messages[j]
+					json.Unmarshal([]byte(*message.Body), &body)
+					enqueue_time := body.MessageAttributes.EnqueueTime.Value
+					enqueue_time_nanosec, _ := strconv.ParseUint(enqueue_time, 10, 0)
+					latency := uint64(time.Now().UnixNano()) - enqueue_time_nanosec
+
+					// Append entries for batch delete
+					id := fmt.Sprintf("%d", count)
+					entries = append(entries, &sqs.DeleteMessageBatchRequestEntry{
+						Id: &id,
+						ReceiptHandle: message.ReceiptHandle,
+					})
 					atomic.AddUint64(&count, 1)
 					atomic.AddUint64(&totalLatency, latency)
 					// Add latency to list after converting from nano to millisecond
 					latencyList = append(latencyList, latency/1000000)
+				}
+				// Batch delete
+				if len(entries) > 0 {
+					_, err := sqs_client.DeleteMessageBatch(&sqs.DeleteMessageBatchInput{
+						QueueUrl:      &queue_url,
+						Entries:       entries,
+					})
+					if err != nil {
+						fmt.Println("Batch Delete Error: ", err)
+					}
 				}
 			}
 		}()
